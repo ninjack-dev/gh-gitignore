@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+
+# Arguments
+declare -g APPEND_ARG=""
+declare -g DIRECTORY_ARG=""
+declare -g FORCE_ARG=""
+declare -g LANGUAGE_ARG=""
+
+# Global Variables
+# TODO: Move these to their relevant declaration points, using -g
+declare -g GITIGNORE_PATH=""
+declare -rg LANGUAGE_LIST=$(gh repo gitignore list 2>/dev/null) # Cache language list, as this command uses REST and is slow to re-run
+declare -g GITIGNORE_CONTENT
+
+# Colors from https://brand.github.com/foundations/color
+help() {
+  HELP_MESSAGE="\
+ Usage: gh gitignore [language] [--directory DIR] [flags]
+
+ If DIR is not provided, it first defaults to the repo-level .gitignore; if it cannot find an existing repository, it will write to a .gitignore in the current directory.
+
+ You can optionally pipe to STDOUT to manually write to existing files, tee, etc.
+
+ Flags:
+   -h, --help          Show this help message
+   -d, --directory     Directory to write gitignore contents to. 
+   -a, --append        Append to existing .gitignore, if applicable
+   -f, --force         Don't prompt when overwriting existing .gitignore
+"
+
+  printf "%s\n" "$HELP_MESSAGE"
+}
+
+confirm_overwrite() {
+  gum confirm "Overwrite $GITIGNORE_PATH?" \
+    --prompt.foreground="#FFFFFF" \
+    --selected.background="#08872B" \
+    --no-show-help
+  return $?
+}
+
+write_content() {
+  if [ -t 1 ]; then
+    if [[ $APPEND_ARG == "true" && -f $GITIGNORE_PATH ]]; then
+      grep --fixed-strings --invert-match --line-regexp --file="$GITIGNORE_PATH" <(echo -n "$1") >> "$GITIGNORE_PATH" # Linewise union of incoming/current
+    else
+      if [[ -f $GITIGNORE_PATH ]] \
+        && [[ ! $FORCE_ARG == "true" ]] && ! confirm_overwrite; then
+      echo "Not overwriting $GITIGNORE_PATH"
+      exit 1
+      fi
+      printf "%s" "$1" > "$GITIGNORE_PATH"
+    fi
+  else
+    printf "%s" "$1"
+  fi
+
+  return 0 # Some previous commands can technically fail
+}
+
+determine_gitignore_path() {
+  if [[ -n $DIRECTORY_ARG ]]; then
+    if [[ ! -d $DIRECTORY_ARG ]]; then
+      echo "$DIRECTORY_ARG is not a directory"
+      exit 1
+    else
+      GITIGNORE_PATH="$DIRECTORY_ARG/.gitignore"
+    fi
+  else
+    GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
+    if [[ -n $GIT_ROOT ]]; then 
+      GITIGNORE_PATH="$GIT_ROOT/.gitignore"
+    else
+      GITIGNORE_PATH="$PWD/.gitignore"
+    fi
+  fi
+}
+
+get_content() {
+  [[ -n $LANGUAGE_ARG ]] && language=$(grep --line-regexp "$LANGUAGE_ARG" <<< "$LANGUAGE_LIST")
+
+  if [[ -z $language ]]; then
+    export GUM_FILTER_VALUE="$LANGUAGE_ARG"
+    language=$(gum filter \
+      --header="Select Gitignore language template" \
+      --indicator.foreground="#08872B" \
+      --match.foreground="#08872B" \
+      --header.foreground="#5FED83" <<< "$LANGUAGE_LIST")
+  fi
+
+  [[ -z $language ]] && exit 1
+  GITIGNORE_CONTENT=$(gh repo gitignore view "$language")
+}
+
+
+main() {
+
+  if ! type -p gum >/dev/null; then
+    echo "Gum not found in the PATH" >&2
+    exit 1
+  fi
+
+  [[ -z $LANGUAGE_LIST ]] && echo "Could not get list of languages; are you connected to the internet?" && exit 1
+
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      # Handle -d <arg>
+      -d|--directory)
+      if [[ -n "$2" && "$2" != -* ]]; then
+        DIRECTORY_ARG="$2"
+        shift 2
+      else
+        echo "Error: $1 requires an argument" >&2
+        exit 1
+      fi
+      ;;
+    --directory=*)
+      DIRECTORY_ARG="${1#*=}"
+      shift
+      ;;
+    -[!-]?*)
+      shortflags="${1#-}"
+      shift
+      while [[ -n "$shortflags" ]]; do
+        flag="${shortflags:0:1}"
+        shortflags="${shortflags:1}"
+        case "$flag" in
+          a) APPEND_ARG="true" ;;
+          f) FORCE_ARG="true" ;;
+          h) help; exit 0 ;;
+          d)
+            if [[ -n "$shortflags" ]]; then
+              DIRECTORY_ARG="$shortflags"
+              shortflags=""
+            elif [[ -n "${1:-}" && "$1" != -* ]]; then
+              DIRECTORY_ARG="$1"
+              shift
+            else
+              echo "Error: -d requires an argument" >&2
+              exit 1
+            fi
+            ;;
+          *)
+            echo "Unknown flag: -$flag" >&2
+            exit 1
+            ;;
+        esac
+      done
+      ;;
+    -a|--append)
+      APPEND_ARG="true"
+      shift
+      ;;
+    -f|--force)
+      FORCE_ARG="true"
+      shift
+      ;;
+    -h|--help)
+      help
+      exit 0
+      ;;
+    *)
+      if [[ -z $LANGUAGE_ARG ]]; then 
+        LANGUAGE_ARG="$1"
+        shift
+      else
+        echo "Too many args!" >&2
+        exit 1
+      fi
+      ;;
+  esac
+done
+
+get_content
+determine_gitignore_path
+write_content "$GITIGNORE_CONTENT"
+
+}
+
+main "$@"
