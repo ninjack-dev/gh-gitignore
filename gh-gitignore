@@ -1,18 +1,17 @@
 #!/usr/bin/env bash
 
 # Arguments
-declare -g APPEND_ARG=""
+declare -g APPEND_ARG="false"
+declare -g OVERWRITE_ARG="false"
 declare -g DIRECTORY_ARG=""
-declare -g FORCE_ARG=""
 declare -g LANGUAGE_ARG=""
 
 # Global Variables
 # TODO: Move these to their relevant declaration points, using -g
 declare -g GITIGNORE_PATH=""
-declare -rg LANGUAGE_LIST=$(gh repo gitignore list 2>/dev/null) # Cache language list, as this command uses REST and is slow to re-run
+declare -rg LANGUAGE_LIST=$(gh repo gitignore list 2> /dev/null) # Cache language list, as this command uses REST and is slow to re-run
 declare -g GITIGNORE_CONTENT
 
-# Colors from https://brand.github.com/foundations/color
 help() {
   HELP_MESSAGE="\
  Usage: gh gitignore [language] [--directory DIR] [flags]
@@ -22,40 +21,53 @@ help() {
  You can optionally pipe to STDOUT to manually write to existing files, tee, etc.
 
  Flags:
-   -h, --help          Show this help message
-   -d, --directory     Directory to write gitignore contents to. 
-   -a, --append        Append to existing .gitignore, if applicable
-   -f, --force         Don't prompt when overwriting existing .gitignore
+   -h, --help        Show this help message
+   -d, --directory   Directory to write .gitignore contents to. 
+   -a, --append      Append to existing .gitignore, if applicable
+   -o, --overwrite   Overwrite existing .gitignore, if applicable
 "
 
   printf "%s\n" "$HELP_MESSAGE"
 }
 
-confirm_overwrite() {
-  gum confirm "Overwrite $GITIGNORE_PATH?" \
-    --prompt.foreground="#FFFFFF" \
-    --selected.background="#08872B" \
-    --no-show-help
-  return $?
+# Colors from https://brand.github.com/foundations/color
+select_behavior() {
+  gum choose --header="$(tput bold)What would you like to do with the existing .gitignore at:$(tput sgr0)
+$GITIGNORE_PATH?" \
+    --header.foreground="#FFFFFF" \
+    --cursor.foreground="#08872B" \
+    "Overwrite" \
+    "Append" \
+    "Cancel"
 }
 
 write_content() {
-  if [ -t 1 ]; then
-    if [[ $APPEND_ARG == "true" && -f $GITIGNORE_PATH ]]; then
-      grep --fixed-strings --invert-match --line-regexp --file="$GITIGNORE_PATH" <(echo -n "$1") >> "$GITIGNORE_PATH" # Linewise union of incoming/current
-    else
-      if [[ -f $GITIGNORE_PATH ]] \
-        && [[ ! $FORCE_ARG == "true" ]] && ! confirm_overwrite; then
-      echo "Not overwriting $GITIGNORE_PATH"
-      exit 1
-      fi
-      printf "%s" "$1" > "$GITIGNORE_PATH"
-    fi
-  else
+  if [ ! -t 1 ]; then
     printf "%s" "$1"
+    return 0
   fi
 
-  return 0 # Some previous commands can technically fail
+  if [[ -f $GITIGNORE_PATH && $APPEND_ARG == "true" ]]; then
+    grep --fixed-strings --invert-match --line-regexp --file="$GITIGNORE_PATH" <(echo -n "$1") >> "$GITIGNORE_PATH" # Linewise union of incoming/current
+  elif [[ ! -f $GITIGNORE_PATH || $OVERWRITE_ARG == "true" ]]; then
+    printf "%s" "$1" > "$GITIGNORE_PATH"
+  else
+    case "$(select_behavior)" in
+      "Overwrite")
+        printf "%s" "$1" > "$GITIGNORE_PATH"
+        printf "Overwriting %s\n" "$GITIGNORE_PATH"
+        ;;
+      "Append")
+        grep --fixed-strings --invert-match --line-regexp --file="$GITIGNORE_PATH" <(echo -n "$1") >> "$GITIGNORE_PATH"
+        printf "Appending to %sn" "$GITIGNORE_PATH"
+        ;;
+      *)
+        return 1
+        ;;
+    esac
+  fi
+
+  return 0 # Some previous commands can technically fail while still producing wanted results
 }
 
 determine_gitignore_path() {
@@ -67,8 +79,8 @@ determine_gitignore_path() {
       GITIGNORE_PATH="$DIRECTORY_ARG/.gitignore"
     fi
   else
-    GIT_ROOT=$(git rev-parse --show-toplevel 2>/dev/null)
-    if [[ -n $GIT_ROOT ]]; then 
+    GIT_ROOT=$(git rev-parse --show-toplevel 2> /dev/null)
+    if [[ -n $GIT_ROOT ]]; then
       GITIGNORE_PATH="$GIT_ROOT/.gitignore"
     else
       GITIGNORE_PATH="$PWD/.gitignore"
@@ -92,10 +104,9 @@ get_content() {
   GITIGNORE_CONTENT=$(gh repo gitignore view "$language")
 }
 
-
 main() {
 
-  if ! type -p gum >/dev/null; then
+  if ! type -p gum > /dev/null; then
     echo "Gum not found in the PATH" >&2
     exit 1
   fi
@@ -105,75 +116,86 @@ main() {
   while [ $# -gt 0 ]; do
     case "$1" in
       # Handle -d <arg>
-      -d|--directory)
-      if [[ -n "$2" && "$2" != -* ]]; then
-        DIRECTORY_ARG="$2"
-        shift 2
-      else
-        echo "Error: $1 requires an argument" >&2
-        exit 1
-      fi
-      ;;
-    --directory=*)
-      DIRECTORY_ARG="${1#*=}"
-      shift
-      ;;
-    -[!-]?*)
-      shortflags="${1#-}"
-      shift
-      while [[ -n "$shortflags" ]]; do
-        flag="${shortflags:0:1}"
-        shortflags="${shortflags:1}"
-        case "$flag" in
-          a) APPEND_ARG="true" ;;
-          f) FORCE_ARG="true" ;;
-          h) help; exit 0 ;;
-          d)
-            if [[ -n "$shortflags" ]]; then
-              DIRECTORY_ARG="$shortflags"
-              shortflags=""
-            elif [[ -n "${1:-}" && "$1" != -* ]]; then
-              DIRECTORY_ARG="$1"
-              shift
-            else
-              echo "Error: -d requires an argument" >&2
-              exit 1
-            fi
-            ;;
-          *)
-            echo "Unknown flag: -$flag" >&2
-            exit 1
-            ;;
-        esac
-      done
-      ;;
-    -a|--append)
-      APPEND_ARG="true"
-      shift
-      ;;
-    -f|--force)
-      FORCE_ARG="true"
-      shift
-      ;;
-    -h|--help)
-      help
-      exit 0
-      ;;
-    *)
-      if [[ -z $LANGUAGE_ARG ]]; then 
-        LANGUAGE_ARG="$1"
+      -d | --directory)
+        if [[ -n "$2" && "$2" != -* ]]; then
+          DIRECTORY_ARG="$2"
+          shift 2
+        else
+          echo "Error: $1 requires an argument" >&2
+          exit 1
+        fi
+        ;;
+      --directory=*)
+        DIRECTORY_ARG="${1#*=}"
         shift
-      else
-        echo "Too many args!" >&2
-        exit 1
-      fi
-      ;;
-  esac
-done
+        ;;
+      -[!-]?*)
+        shortflags="${1#-}"
+        shift
+        while [[ -n "$shortflags" ]]; do
+          flag="${shortflags:0:1}"
+          shortflags="${shortflags:1}"
+          case "$flag" in
+            a)
+              APPEND_ARG="true"
+              OVERWRITE_ARG="false"
+              ;;
+            o)
+              OVERWRITE_ARG="true"
+              APPEND_ARG="false"
+              ;;
+            h)
+              help
+              exit 0
+              ;;
+            d)
+              if [[ -n "$shortflags" ]]; then
+                DIRECTORY_ARG="$shortflags"
+                shortflags=""
+              elif [[ -n "${1:-}" && "$1" != -* ]]; then
+                DIRECTORY_ARG="$1"
+                shift
+              else
+                echo "Error: -d requires an argument" >&2
+                exit 1
+              fi
+              ;;
+            *)
+              echo "Unknown flag: -$flag" >&2
+              exit 1
+              ;;
+          esac
+        done
+        ;;
+      -a | --append)
+        APPEND_ARG="true"
+        OVERWRITE_ARG="false"
+        shift
+        ;;
+      -f | --force)
+        OVERWRITE_ARG="true"
+        APPEND_ARG="false"
+        shift
+        ;;
+      -h | --help)
+        help
+        exit 0
+        ;;
+      *)
+        if [[ -z $LANGUAGE_ARG ]]; then
+          LANGUAGE_ARG="$1"
+          shift
+        else
+          echo "Too many args!" >&2
+          exit 1
+        fi
+        ;;
+    esac
+  done
 
-get_content
-determine_gitignore_path
-write_content "$GITIGNORE_CONTENT"
+  get_content
+  determine_gitignore_path
+  write_content "$GITIGNORE_CONTENT"
 
 }
 
