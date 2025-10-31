@@ -17,9 +17,9 @@ You can optionally pipe to STDOUT to manually write to existing files, `tee`, et
 | Flag | Description |
 |------|-------------|
 | -h, --help | Show this help message |
-| -d, --directory | Directory to write gitignore contents to. |
+| -d, --directory | Directory to write .gitignore contents to. |
 | -a, --append | Append to existing .gtignore, if applicable. It will automatically merge entries. |
-| -f, --force | Don't prompt when overwriting existing .gitignore |
+| -f, --Overwrite | Overwrite existing .gitignore |
 
 ## To-Do
 - [ ] Create basic `read` fallback options for when `gum` is not available
