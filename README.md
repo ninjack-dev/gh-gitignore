@@ -1,5 +1,5 @@
 # gh-gitignore
-A small `gh` extension to ease creation of `.gitignore` templates, such as for subdirectories, or when a repository is already initialized.
+A small `gh` extension to ease creation of `.gitignore` files using `gh`'s template feature, such as for subdirectories or for when a repository is already initialized. 
 ## Requirements
 - `bash` 
 - [`gum`](https://github.com/charmbracelet/gum) for search, selection, and confirmation interfaces
